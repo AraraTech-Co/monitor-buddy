@@ -1,0 +1,18 @@
+FROM rust:1-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release -p server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data
+COPY --from=builder /app/target/release/monitor-buddy-server /usr/local/bin/monitor-buddy-server
+WORKDIR /data
+ENV BIND_ADDR=0.0.0.0:8080 \
+    DATABASE_URL=sqlite:/data/monitor-buddy.db \
+    FRONTEND_ORIGIN=http://localhost:5173 \
+    RUST_LOG=info
+EXPOSE 8080
+ENTRYPOINT ["monitor-buddy-server"]
