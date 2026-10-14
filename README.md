@@ -130,7 +130,7 @@ Triggers on push to `main` and `workflow_dispatch`.
 | Secret | Description |
 |--------|-------------|
 | `DOCKERHUB_PASSWORD` | Docker Hub password or access token |
-| `SSH_PASS` | SSH password for the deploy host |
+| `SSH_PRIVATE_KEY` | Private key (PEM) for SSH deploy; public key must be in `authorized_keys` on the server |
 
 ### Repository variables
 
@@ -143,8 +143,21 @@ Triggers on push to `main` and `workflow_dispatch`.
 | `SSH_HOST` | yes | Central server hostname/IP |
 | `SSH_PORT` | no | Default `22` |
 | `APP_CONTAINER_NAME` | no | Default `monitor-buddy` |
-| `FRONTEND_ORIGIN` | no | Default `http://$SSH_HOST:8080` |
-| `PUBLIC_WS_URL` | no | Default `ws://$SSH_HOST:8080/agent/ws` |
+| `APP_HOST_PORT` | no | Host port mapped to container `8080` (default `8080`) |
+| `FRONTEND_ORIGIN` | no | Public app URL (default `http://$SSH_HOST:$APP_HOST_PORT`) |
+| `PUBLIC_WS_URL` | no | Agent WebSocket URL shown in UI (default `ws://...`) |
+| `COOKIE_SECURE` | no | Default `false`; use `true` with HTTPS |
+
+Example for `https://control.arara-tech.com` (proxy/TLS + host port `19642`):
+
+| Variable | Value |
+|----------|-------|
+| `APP_HOST_PORT` | `19642` |
+| `FRONTEND_ORIGIN` | `https://control.arara-tech.com` |
+| `PUBLIC_WS_URL` | `wss://control.arara-tech.com/agent/ws` |
+| `COOKIE_SECURE` | `true` |
+
+The reverse proxy must forward HTTP and **WebSocket** upgrades to `127.0.0.1:19642`. Agents use `SERVER_URL=wss://control.arara-tech.com/agent/ws`.
 
 Agents on other machines are **not** auto-deployed; pull the agent image when you update them:
 
