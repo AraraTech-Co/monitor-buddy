@@ -7,6 +7,7 @@ pub struct Config {
     pub frontend_origin: String,
     pub cookie_secure: bool,
     pub session_ttl_hours: i64,
+    pub static_dir: String,
 }
 
 impl Config {
@@ -24,6 +25,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(72),
+            static_dir: env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".into()),
         }
     }
 }

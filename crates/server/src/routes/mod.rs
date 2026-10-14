@@ -2,11 +2,14 @@ pub mod agent_ws;
 pub mod auth;
 pub mod hosts;
 
+use std::path::PathBuf;
+
 use axum::{
     Router,
     routing::{delete, get, post},
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
@@ -28,7 +31,7 @@ pub fn app_router(state: AppState) -> Router {
             axum::http::header::COOKIE,
         ]);
 
-    Router::new()
+    let api = Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
@@ -46,7 +49,22 @@ pub fn app_router(state: AppState) -> Router {
             post(hosts::restart_container),
         )
         .route("/agent/ws", get(agent_ws::agent_ws))
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state.clone());
+
+    let static_dir = PathBuf::from(&state.config.static_dir);
+    let index = static_dir.join("index.html");
+
+    let router = if static_dir.is_dir() && index.is_file() {
+        tracing::info!(dir = %static_dir.display(), "serving frontend static files");
+        let spa = ServeDir::new(&static_dir).not_found_service(ServeFile::new(index));
+        api.fallback_service(spa)
+    } else {
+        tracing::warn!(
+            dir = %static_dir.display(),
+            "STATIC_DIR missing or empty; API-only mode (no SPA)"
+        );
+        api
+    };
+
+    router.layer(cors).layer(TraceLayer::new_for_http())
 }

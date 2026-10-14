@@ -3,11 +3,11 @@
 Simple Docker monitoring across multiple machines.
 
 - **Frontend** (React + Vite): dashboards and charts in the browser
-- **Server** (Rust / Axum + SQLite): auth, host registry, agent hub
+- **Server** (Rust / Axum + SQLite): auth, host registry, agent hub; in production serves the built UI
 - **Agent** (Rust): lightweight process on each machine, talks to the local Docker socket and connects **outbound** over WebSocket
 
 ```
-[Browser] --HTTP--> [Server] <--WS-- [Agent] --unix--> [Docker]
+[Browser] --HTTP--> [Server+UI] <--WS-- [Agent] --unix--> [Docker]
                          |
                       [SQLite]
 ```
@@ -42,6 +42,8 @@ npm run dev
 
 Open http://localhost:5173
 
+For a single-process check (API + built UI), run `npm run build` in `frontend/` and set `STATIC_DIR=frontend/dist` plus `FRONTEND_ORIGIN=http://localhost:8080`.
+
 ### 3. Bootstrap user
 
 On first run, use **Register bootstrap user** (only allowed when no users exist). Passwords are hashed with Argon2id.
@@ -52,21 +54,13 @@ In **Hosts**, create a host. Copy the one-time `AGENT_TOKEN` and the suggested `
 
 ### 5. Run the agent
 
-Build the agent image (from repo root):
-
-```bash
-docker build -f docker/Dockerfile.agent -t monitor-buddy-agent:latest .
-```
-
-Or run the binary directly on a machine with Docker:
-
 ```bash
 export SERVER_URL=ws://<server-host>:8080/agent/ws
 export AGENT_TOKEN=<token-from-ui>
 cargo run -p agent
 ```
 
-With Docker:
+Or with Docker (after the image is on Docker Hub or built locally):
 
 ```bash
 docker run -d --name mb-agent \
@@ -74,7 +68,7 @@ docker run -d --name mb-agent \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e SERVER_URL=ws://<server-host>:8080/agent/ws \
   -e AGENT_TOKEN=<token> \
-  monitor-buddy-agent:latest
+  <dockerhub-user>/<agent-repo>:latest
 ```
 
 The agent only needs outbound access to the server (no inbound ports on the monitored host).
@@ -85,8 +79,9 @@ The agent only needs outbound access to the server (no inbound ports on the moni
 |----------|---------|-------------|
 | `BIND_ADDR` | `0.0.0.0:8080` | HTTP listen address |
 | `DATABASE_URL` | `sqlite:data/monitor-buddy.db` | SQLite path |
-| `FRONTEND_ORIGIN` | `http://localhost:5173` | CORS + cookie origin |
+| `FRONTEND_ORIGIN` | `http://localhost:5173` | CORS allowlist (use the public app URL in production) |
 | `PUBLIC_WS_URL` | `ws://localhost:8080/agent/ws` | Shown in `docker run` helper |
+| `STATIC_DIR` | `frontend/dist` | Built SPA directory (`/app/static` in the app image) |
 | `COOKIE_SECURE` | `false` | Set `true` behind HTTPS |
 | `SESSION_TTL_HOURS` | `72` | Session lifetime |
 
@@ -98,15 +93,65 @@ The agent only needs outbound access to the server (no inbound ports on the moni
 | `AGENT_TOKEN` | *(required)* | Token issued when creating a host |
 | `HEARTBEAT_SECS` | `10` | Snapshot interval |
 
-## Docker (server)
+## Docker images
+
+Two images:
+
+| Image | Dockerfile | Contents |
+|-------|------------|----------|
+| App | `docker/Dockerfile.server` | Backend + built frontend |
+| Agent | `docker/Dockerfile.agent` | Agent only |
 
 ```bash
-docker build -f docker/Dockerfile.server -t monitor-buddy-server:latest .
-docker run -d --name mb-server -p 8080:8080 \
-  -e FRONTEND_ORIGIN=http://localhost:5173 \
+docker build -f docker/Dockerfile.server -t monitor-buddy:latest .
+docker build -f docker/Dockerfile.agent -t monitor-buddy-agent:latest .
+
+docker run -d --name monitor-buddy --restart unless-stopped \
+  -p 8080:8080 \
+  -v monitor-buddy-data:/data \
+  -e FRONTEND_ORIGIN=http://localhost:8080 \
   -e PUBLIC_WS_URL=ws://localhost:8080/agent/ws \
-  -v mb-data:/data \
-  monitor-buddy-server:latest
+  monitor-buddy:latest
+```
+
+The named volume `monitor-buddy-data` keeps the SQLite database across container recreates.
+
+## Deploy (GitHub Actions → Docker Hub → SSH)
+
+Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+
+Triggers on push to `main` and `workflow_dispatch`.
+
+1. Builds and pushes **app** and **agent** images to Docker Hub (`latest` + `sha-<short>`)
+2. SSHs into the central server, `docker pull`s the app image, and recreates the container
+
+### Repository secrets
+
+| Secret | Description |
+|--------|-------------|
+| `DOCKERHUB_PASSWORD` | Docker Hub password or access token |
+| `SSH_PASS` | SSH password for the deploy host |
+
+### Repository variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DOCKERHUB_USERNAME` | yes | Docker Hub user/org |
+| `DOCKERHUB_REPOSITORY` | yes | App image repo (e.g. `monitor-buddy`) |
+| `DOCKERHUB_AGENT_REPOSITORY` | yes | Agent image repo (e.g. `monitor-buddy-agent`) |
+| `SSH_USERNAME` | yes | SSH user on the central server |
+| `SSH_HOST` | yes | Central server hostname/IP |
+| `SSH_PORT` | no | Default `22` |
+| `APP_CONTAINER_NAME` | no | Default `monitor-buddy` |
+| `FRONTEND_ORIGIN` | no | Default `http://$SSH_HOST:8080` |
+| `PUBLIC_WS_URL` | no | Default `ws://$SSH_HOST:8080/agent/ws` |
+
+Agents on other machines are **not** auto-deployed; pull the agent image when you update them:
+
+```bash
+docker pull <dockerhub-user>/<agent-repo>:latest
+docker stop mb-agent && docker rm mb-agent
+# re-run with the same AGENT_TOKEN / SERVER_URL as before
 ```
 
 ## API (MVP)
@@ -128,10 +173,11 @@ docker run -d --name mb-server -p 8080:8080 \
 
 ```
 crates/shared   shared DTOs / WS protocol
-crates/server   central API + agent hub
+crates/server   central API + agent hub + optional static UI
 crates/agent    per-machine Docker agent
 frontend/       React UI
 docker/         Dockerfiles
+.github/        Deploy workflow
 ```
 
 ## Notes

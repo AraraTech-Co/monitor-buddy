@@ -1,0 +1,97 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tags
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          echo "sha_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "app_image=${{ vars.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY }}" >> "$GITHUB_OUTPUT"
+          echo "agent_image=${{ vars.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_AGENT_REPOSITORY }}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.server
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.app_image }}:latest
+            ${{ steps.meta.outputs.app_image }}:${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.agent
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.agent_image }}:latest
+            ${{ steps.meta.outputs.agent_image }}:${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Pull and recreate app container
+        env:
+          SSHPASS: ${{ secrets.SSH_PASS }}
+          SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+          SSH_HOST: ${{ vars.SSH_HOST }}
+          SSH_PORT: ${{ vars.SSH_PORT }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          APP_CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME }}
+          FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
+          PUBLIC_WS_URL: ${{ vars.PUBLIC_WS_URL }}
+        run: |
+          set -euo pipefail
+
+          SSH_PORT="${SSH_PORT:-22}"
+          APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-monitor-buddy}"
+          FRONTEND_ORIGIN="${FRONTEND_ORIGIN:-http://${SSH_HOST}:8080}"
+          PUBLIC_WS_URL="${PUBLIC_WS_URL:-ws://${SSH_HOST}:8080/agent/ws}"
+          IMAGE="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPOSITORY}:latest"
+
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new -p "${SSH_PORT}" \
+            "${SSH_USERNAME}@${SSH_HOST}" \
+            "set -euo pipefail
+             docker pull '${IMAGE}'
+             docker stop '${APP_CONTAINER_NAME}' || true
+             docker rm '${APP_CONTAINER_NAME}' || true
+             docker run -d --name '${APP_CONTAINER_NAME}' --restart unless-stopped \
+               -p 8080:8080 \
+               -v monitor-buddy-data:/data \
+               -e FRONTEND_ORIGIN='${FRONTEND_ORIGIN}' \
+               -e PUBLIC_WS_URL='${PUBLIC_WS_URL}' \
+               -e COOKIE_SECURE=false \
+               -e STATIC_DIR=/app/static \
+               '${IMAGE}'
+            "
