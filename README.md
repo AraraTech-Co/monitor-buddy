@@ -120,10 +120,12 @@ The named volume `monitor-buddy-data` keeps the SQLite database across container
 
 Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 
-Triggers on push to `main` and `workflow_dispatch`.
+Triggers on push to `master`/`main` and `workflow_dispatch`.
 
 1. Builds and pushes **app** and **agent** images to Docker Hub (`latest` + `sha-<short>`)
 2. SSHs into the central server, `docker pull`s the app image, and recreates the container
+
+Add these under **Settings → Secrets and variables → Actions** (Repository secrets / Repository variables — not Environments).
 
 ### Repository secrets
 
@@ -197,3 +199,28 @@ docker/         Dockerfiles
 
 - Container state is cached in memory from agent heartbeats; SQLite stores users, sessions, and hosts.
 - Put TLS termination (Caddy/nginx) in front for production; set `COOKIE_SECURE=true` and `wss://` for agents.
+
+## Nginx WebSocket (required for `wss://`)
+
+Agents connect with WebSocket. Your reverse proxy must upgrade the connection:
+
+```nginx
+location /agent/ws {
+    proxy_pass http://127.0.0.1:19642;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400;
+}
+```
+
+If the agent runs on the **same host** as the server, connecting to the public hostname often fails (Docker hairpin / firewall). Use host networking:
+
+```bash
+docker run -d --name mb-agent --restart unless-stopped --network host   -v /var/run/docker.sock:/var/run/docker.sock   -e SERVER_URL=ws://127.0.0.1:19642/agent/ws   -e AGENT_TOKEN=<token>   dockerflip747/monitor-buddy-agent:latest
+```
+
+Alternatives: `--add-host=host.docker.internal:host-gateway` with `ws://host.docker.internal:19642/agent/ws`, or the real `docker0` IP from `ip -4 addr show docker0`.

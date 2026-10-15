@@ -8,10 +8,24 @@ pub struct Config {
     pub cookie_secure: bool,
     pub session_ttl_hours: i64,
     pub static_dir: String,
+    pub public_ws_url: String,
+    pub agent_image: String,
 }
 
 impl Config {
     pub fn from_env() -> Self {
+        let agent_image = env::var("AGENT_IMAGE").unwrap_or_else(|_| {
+            match (
+                env::var("DOCKERHUB_USERNAME").ok(),
+                env::var("DOCKERHUB_AGENT_REPOSITORY").ok(),
+            ) {
+                (Some(user), Some(repo)) if !user.is_empty() && !repo.is_empty() => {
+                    format!("{user}/{repo}:latest")
+                }
+                _ => "monitor-buddy-agent:latest".into(),
+            }
+        });
+
         Self {
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL")
@@ -26,6 +40,9 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(72),
             static_dir: env::var("STATIC_DIR").unwrap_or_else(|_| "frontend/dist".into()),
+            public_ws_url: env::var("PUBLIC_WS_URL")
+                .unwrap_or_else(|_| "ws://localhost:8080/agent/ws".into()),
+            agent_image,
         }
     }
 }

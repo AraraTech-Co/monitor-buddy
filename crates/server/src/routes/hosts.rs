@@ -98,22 +98,20 @@ pub async fn create_host(
         AppError::from(e)
     })?;
 
-    let public_base = std::env::var("PUBLIC_WS_URL")
-        .unwrap_or_else(|_| format!("ws://localhost:8080/agent/ws"));
-
     let docker_run = format!(
         "docker run -d --name mb-agent-{slug} --restart unless-stopped \
 -v /var/run/docker.sock:/var/run/docker.sock \
 -e SERVER_URL={ws} \
 -e AGENT_TOKEN={token} \
-monitor-buddy-agent:latest",
+{image}",
         slug = name
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect::<String>()
             .to_lowercase(),
-        ws = public_base,
+        ws = state.config.public_ws_url,
         token = token,
+        image = state.config.agent_image,
     );
 
     Ok(Json(CreateHostResponse {

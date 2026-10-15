@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   workflow_dispatch:
 
 jobs:
@@ -57,18 +57,21 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Setup SSH key
+      - name: Start ssh-agent with deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known_hosts
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ vars.SSH_HOST }}
           SSH_PORT: ${{ vars.SSH_PORT }}
         run: |
           set -euo pipefail
+          : "${SSH_HOST:?SSH_HOST repository variable is required}"
+          SSH_PORT="${SSH_PORT:-22}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          SSH_PORT="${SSH_PORT:-22}"
           ssh-keyscan -p "${SSH_PORT}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts
 
       - name: Pull and recreate app container
@@ -83,8 +86,14 @@ jobs:
           FRONTEND_ORIGIN: ${{ vars.FRONTEND_ORIGIN }}
           PUBLIC_WS_URL: ${{ vars.PUBLIC_WS_URL }}
           COOKIE_SECURE: ${{ vars.COOKIE_SECURE }}
+          DOCKERHUB_AGENT_REPOSITORY: ${{ vars.DOCKERHUB_AGENT_REPOSITORY }}
         run: |
           set -euo pipefail
+
+          : "${SSH_USERNAME:?SSH_USERNAME repository variable is required}"
+          : "${SSH_HOST:?SSH_HOST repository variable is required}"
+          : "${DOCKERHUB_USERNAME:?DOCKERHUB_USERNAME repository variable is required}"
+          : "${DOCKERHUB_REPOSITORY:?DOCKERHUB_REPOSITORY repository variable is required}"
 
           SSH_PORT="${SSH_PORT:-22}"
           APP_CONTAINER_NAME="${APP_CONTAINER_NAME:-monitor-buddy}"
@@ -92,9 +101,10 @@ jobs:
           FRONTEND_ORIGIN="${FRONTEND_ORIGIN:-http://${SSH_HOST}:${APP_HOST_PORT}}"
           PUBLIC_WS_URL="${PUBLIC_WS_URL:-ws://${SSH_HOST}:${APP_HOST_PORT}/agent/ws}"
           COOKIE_SECURE="${COOKIE_SECURE:-false}"
+          AGENT_IMAGE="${DOCKERHUB_USERNAME}/${DOCKERHUB_AGENT_REPOSITORY:-monitor-buddy-agent}:latest"
           IMAGE="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPOSITORY}:latest"
 
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          ssh -o IdentitiesOnly=yes -o BatchMode=yes \
             -p "${SSH_PORT}" \
             "${SSH_USERNAME}@${SSH_HOST}" \
             "set -euo pipefail
@@ -108,5 +118,8 @@ jobs:
                -e PUBLIC_WS_URL='${PUBLIC_WS_URL}' \
                -e COOKIE_SECURE='${COOKIE_SECURE}' \
                -e STATIC_DIR=/app/static \
+               -e AGENT_IMAGE='${AGENT_IMAGE}' \
+               -e DOCKERHUB_USERNAME='${DOCKERHUB_USERNAME}' \
+               -e DOCKERHUB_AGENT_REPOSITORY='${DOCKERHUB_AGENT_REPOSITORY:-monitor-buddy-agent}' \
                '${IMAGE}'
             "
