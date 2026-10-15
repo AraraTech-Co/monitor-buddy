@@ -3,6 +3,7 @@ import { useAuth } from '../auth'
 
 export function Layout() {
   const { user, logout } = useAuth()
+  const isMaster = user?.role === 'master'
 
   return (
     <div className="shell">
@@ -15,9 +16,14 @@ export function Layout() {
             Dashboard
           </NavLink>
           <NavLink to="/hosts">Hosts</NavLink>
+          {isMaster && <NavLink to="/users">Users</NavLink>}
+          {isMaster && <NavLink to="/tracker">Tracker</NavLink>}
         </nav>
         <div className="topbar-right">
-          <span className="user">{user?.username}</span>
+          <span className="user">
+            {user?.username}
+            {isMaster ? ' · master' : ''}
+          </span>
           <button type="button" className="btn ghost" onClick={() => void logout()}>
             Logout
           </button>

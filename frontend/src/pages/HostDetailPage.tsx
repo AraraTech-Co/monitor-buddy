@@ -9,6 +9,7 @@ export function HostDetailPage() {
   const [containers, setContainers] = useState<Container[]>([])
   const [error, setError] = useState<string | null>(null)
   const [restarting, setRestarting] = useState<string | null>(null)
+  const [toggling, setToggling] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -43,6 +44,20 @@ export function HostDetailPage() {
     }
   }
 
+  async function toggleOverwatch(c: Container, enabled: boolean) {
+    if (!c.has_healthcheck) return
+    setToggling(c.id)
+    try {
+      await api.setOverwatch(id, c.id, enabled)
+      setContainers(await api.containers(id))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'overwatch update failed')
+    } finally {
+      setToggling(null)
+    }
+  }
+
   return (
     <section className="page">
       <header className="page-head">
@@ -73,6 +88,7 @@ export function HostDetailPage() {
             <th>Image</th>
             <th>State</th>
             <th>Health</th>
+            <th>Overwatch</th>
             <th>Status</th>
             <th />
           </tr>
@@ -95,6 +111,27 @@ export function HostDetailPage() {
                 >
                   {c.health ?? 'n/a'}
                 </span>
+              </td>
+              <td>
+                <label
+                  className={`switch ${!c.has_healthcheck ? 'disabled' : ''} ${c.overwatch ? 'on' : ''}`}
+                  title={
+                    c.has_healthcheck
+                      ? 'Auto-restart when unhealthy'
+                      : 'Requires a Docker healthcheck'
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={c.overwatch}
+                    disabled={!c.has_healthcheck || toggling === c.id}
+                    onChange={(e) => void toggleOverwatch(c, e.target.checked)}
+                  />
+                  <span className="switch-track" />
+                  <span className="switch-label">
+                    {c.has_healthcheck ? (c.overwatch ? 'On' : 'Off') : 'N/A'}
+                  </span>
+                </label>
               </td>
               <td className="muted">{c.status}</td>
               <td className="actions">

@@ -12,9 +12,12 @@ use crate::{
     error::{AppError, AppResult},
     models::{LoginRequest, RegisterRequest, User, UserResponse},
     state::AppState,
+    tracker,
 };
 
 pub struct AuthUser(pub User);
+
+pub struct MasterUser(pub User);
 
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
@@ -29,9 +32,19 @@ impl FromRequestParts<AppState> for AuthUser {
             .map(|c| c.value().to_string())
             .ok_or(AppError::Unauthorized)?;
 
-        let row = sqlx::query_as::<_, (String, String, String, chrono::DateTime<Utc>, chrono::DateTime<Utc>)>(
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                chrono::DateTime<Utc>,
+                chrono::DateTime<Utc>,
+            ),
+        >(
             r#"
-            SELECT u.id, u.username, u.password_hash, u.created_at, s.expires_at
+            SELECT u.id, u.username, u.password_hash, u.role, u.created_at, s.expires_at
             FROM sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id = ?
@@ -42,7 +55,7 @@ impl FromRequestParts<AppState> for AuthUser {
         .await?
         .ok_or(AppError::Unauthorized)?;
 
-        let (id, username, password_hash, created_at, expires_at) = row;
+        let (id, username, password_hash, role, created_at, expires_at) = row;
         if expires_at < Utc::now() {
             let _ = sqlx::query("DELETE FROM sessions WHERE id = ?")
                 .bind(&session_id)
@@ -55,8 +68,24 @@ impl FromRequestParts<AppState> for AuthUser {
             id,
             username,
             password_hash,
+            role,
             created_at,
         }))
+    }
+}
+
+impl FromRequestParts<AppState> for MasterUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let AuthUser(user) = AuthUser::from_request_parts(parts, state).await?;
+        if user.role != "master" {
+            return Err(AppError::Forbidden);
+        }
+        Ok(MasterUser(user))
     }
 }
 
@@ -70,6 +99,14 @@ fn session_cookie(id: &str, secure: bool, ttl_hours: i64) -> Cookie<'static> {
         cookie.set_secure(true);
     }
     cookie
+}
+
+fn to_response(user: &User) -> UserResponse {
+    UserResponse {
+        id: user.id.clone(),
+        username: user.username.clone(),
+        role: user.role.clone(),
+    }
 }
 
 pub async fn register(
@@ -98,7 +135,7 @@ pub async fn register(
     let now = Utc::now();
 
     sqlx::query(
-        "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, 'master', ?)",
     )
     .bind(&id)
     .bind(&username)
@@ -107,7 +144,7 @@ pub async fn register(
     .execute(&state.db)
     .await?;
 
-    let (jar, user) = create_session(&state, jar, &id, &username).await?;
+    let (jar, user) = create_session(&state, jar, &id, &username, "master").await?;
     Ok((jar, Json(user)))
 }
 
@@ -117,7 +154,7 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> AppResult<(CookieJar, Json<UserResponse>)> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
     )
     .bind(body.username.trim())
     .fetch_optional(&state.db)
@@ -128,7 +165,19 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
-    let (jar, resp) = create_session(&state, jar, &user.id, &user.username).await?;
+    let (jar, resp) =
+        create_session(&state, jar, &user.id, &user.username, &user.role).await?;
+
+    tracker::record(
+        &state.db,
+        &user,
+        "login",
+        None,
+        None,
+        None,
+    )
+    .await;
+
     Ok((jar, Json(resp)))
 }
 
@@ -137,6 +186,22 @@ pub async fn logout(
     jar: CookieJar,
 ) -> AppResult<(CookieJar, Json<serde_json::Value>)> {
     if let Some(cookie) = jar.get("session") {
+        // Best-effort: load user before deleting session for tracker
+        if let Ok(Some(user)) = sqlx::query_as::<_, User>(
+            r#"
+            SELECT u.id, u.username, u.password_hash, u.role, u.created_at
+            FROM sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.id = ?
+            "#,
+        )
+        .bind(cookie.value())
+        .fetch_optional(&state.db)
+        .await
+        {
+            tracker::record(&state.db, &user, "logout", None, None, None).await;
+        }
+
         let _ = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(cookie.value())
             .execute(&state.db)
@@ -147,10 +212,7 @@ pub async fn logout(
 }
 
 pub async fn me(AuthUser(user): AuthUser) -> Json<UserResponse> {
-    Json(UserResponse {
-        id: user.id,
-        username: user.username,
-    })
+    Json(to_response(&user))
 }
 
 async fn create_session(
@@ -158,6 +220,7 @@ async fn create_session(
     jar: CookieJar,
     user_id: &str,
     username: &str,
+    role: &str,
 ) -> AppResult<(CookieJar, UserResponse)> {
     let session_id = Uuid::new_v4().to_string();
     let now = Utc::now();
@@ -184,6 +247,7 @@ async fn create_session(
         UserResponse {
             id: user_id.to_string(),
             username: username.to_string(),
+            role: role.to_string(),
         },
     ))
 }

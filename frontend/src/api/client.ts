@@ -56,4 +56,21 @@ export const api = {
       `/api/hosts/${hostId}/containers/${cid}/restart`,
       { method: 'POST' },
     ),
+  setOverwatch: (hostId: string, cid: string, enabled: boolean) =>
+    request<{ ok: boolean; overwatch: boolean }>(
+      `/api/hosts/${hostId}/containers/${cid}/overwatch`,
+      { method: 'PUT', body: JSON.stringify({ enabled }) },
+    ),
+  listUsers: () => request<import('./types').User[]>('/api/users'),
+  createUser: (username: string, password: string) =>
+    request<import('./types').User>('/api/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  deleteUser: (id: string) =>
+    request<{ ok: boolean }>(`/api/users/${id}`, { method: 'DELETE' }),
+  tracker: (limit = 100, offset = 0) =>
+    request<import('./types').ActivityEntry[]>(
+      `/api/tracker?limit=${limit}&offset=${offset}`,
+    ),
 }

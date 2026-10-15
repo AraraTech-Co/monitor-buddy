@@ -513,3 +513,67 @@ label.inline {
     margin-left: 0;
   }
 }
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-track {
+  width: 2.4rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: #243341;
+  border: 1px solid var(--line);
+  position: relative;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  background: #c5d0db;
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.switch.on .switch-track {
+  background: rgba(61, 187, 138, 0.35);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-track::after {
+  transform: translateX(1.05rem);
+  background: var(--accent);
+}
+
+.switch.on .switch-label {
+  color: var(--accent);
+}
+
+.switch.disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}

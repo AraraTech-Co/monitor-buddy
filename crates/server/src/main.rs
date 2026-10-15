@@ -4,6 +4,8 @@ mod config;
 mod db;
 mod error;
 mod models;
+mod overwatch;
+mod tracker;
 mod routes;
 mod state;
 
@@ -25,10 +27,12 @@ async fn main() -> anyhow::Result<()> {
     let hub = AgentHub::new();
 
     let state = AppState {
-        db,
+        db: db.clone(),
         config: config.clone(),
-        hub,
+        hub: hub.clone(),
     };
+
+    tokio::spawn(overwatch::run_loop(db, hub));
 
     let app = routes::app_router(state);
     let addr: SocketAddr = config.bind_addr.parse()?;

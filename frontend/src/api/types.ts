@@ -1,6 +1,9 @@
+export type UserRole = 'master' | 'member'
+
 export type User = {
   id: string
   username: string
+  role: UserRole
 }
 
 export type Host = {
@@ -20,6 +23,8 @@ export type Container = {
   status: string
   state: string
   health: string | null
+  has_healthcheck: boolean
+  overwatch: boolean
 }
 
 export type CreateHostResponse = {
@@ -27,4 +32,15 @@ export type CreateHostResponse = {
   name: string
   agent_token: string
   docker_run: string
+}
+
+export type ActivityEntry = {
+  id: string
+  user_id: string
+  username: string
+  action: string
+  resource_type: string | null
+  resource_id: string | null
+  detail: string | null
+  created_at: string
 }

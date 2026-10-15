@@ -8,6 +8,7 @@ pub struct User {
     pub username: String,
     #[serde(skip_serializing)]
     pub password_hash: String,
+    pub role: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -38,6 +39,25 @@ pub struct LoginRequest {
 pub struct UserResponse {
     pub id: String,
     pub username: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct ActivityEntry {
+    pub id: String,
+    pub user_id: String,
+    pub username: String,
+    pub action: String,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,4 +82,21 @@ pub struct HostResponse {
     pub container_count: usize,
     pub unhealthy_count: usize,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContainerView {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+    pub state: String,
+    pub health: Option<String>,
+    pub has_healthcheck: bool,
+    pub overwatch: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetOverwatchRequest {
+    pub enabled: bool,
 }

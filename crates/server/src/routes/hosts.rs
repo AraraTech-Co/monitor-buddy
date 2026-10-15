@@ -10,9 +10,13 @@ use uuid::Uuid;
 use crate::{
     auth::{generate_agent_token, hash_token},
     error::{AppError, AppResult},
-    models::{CreateHostRequest, CreateHostResponse, Host, HostResponse},
+    models::{
+        ContainerView, CreateHostRequest, CreateHostResponse, Host, HostResponse,
+        SetOverwatchRequest,
+    },
     routes::auth::AuthUser,
     state::AppState,
+    tracker,
 };
 
 fn unhealthy_count(containers: &[ContainerInfo]) -> usize {
@@ -67,7 +71,7 @@ pub async fn list_hosts(
 
 pub async fn create_host(
     State(state): State<AppState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Json(body): Json<CreateHostRequest>,
 ) -> AppResult<Json<CreateHostResponse>> {
     let name = body.name.trim().to_string();
@@ -114,6 +118,16 @@ pub async fn create_host(
         image = state.config.agent_image,
     );
 
+    tracker::record(
+        &state.db,
+        &user,
+        "host.create",
+        Some("host"),
+        Some(&id),
+        Some(serde_json::json!({ "name": name })),
+    )
+    .await;
+
     Ok(Json(CreateHostResponse {
         id,
         name,
@@ -124,7 +138,7 @@ pub async fn create_host(
 
 pub async fn delete_host(
     State(state): State<AppState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
     let res = sqlx::query("DELETE FROM hosts WHERE id = ?")
@@ -135,6 +149,15 @@ pub async fn delete_host(
         return Err(AppError::NotFound);
     }
     state.hub.disconnect(&id).await;
+    tracker::record(
+        &state.db,
+        &user,
+        "host.delete",
+        Some("host"),
+        Some(&id),
+        None,
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -142,10 +165,118 @@ pub async fn list_containers(
     State(state): State<AppState>,
     _user: AuthUser,
     Path(id): Path<String>,
-) -> AppResult<Json<Vec<ContainerInfo>>> {
+) -> AppResult<Json<Vec<ContainerView>>> {
     ensure_host_exists(&state, &id).await?;
     let containers = state.hub.list_containers(&id).await?;
-    Ok(Json(containers))
+    let enabled: Vec<String> = sqlx::query_scalar(
+        "SELECT container_id FROM overwatch WHERE host_id = ? AND enabled = 1",
+    )
+    .bind(&id)
+    .fetch_all(&state.db)
+    .await?;
+
+    let views = containers
+        .into_iter()
+        .map(|c| {
+            let has_healthcheck = c.health.is_some();
+            let overwatch = has_healthcheck
+                && enabled.iter().any(|ow| {
+                    ow == &c.id || c.id.starts_with(ow.as_str()) || ow.starts_with(&c.id)
+                });
+            ContainerView {
+                id: c.id,
+                name: c.name,
+                image: c.image,
+                status: c.status,
+                state: c.state,
+                health: c.health,
+                has_healthcheck,
+                overwatch,
+            }
+        })
+        .collect();
+
+    Ok(Json(views))
+}
+
+pub async fn set_overwatch(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((id, cid)): Path<(String, String)>,
+    Json(body): Json<SetOverwatchRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    ensure_host_exists(&state, &id).await?;
+
+    let containers = state.hub.list_containers(&id).await?;
+    let container = containers
+        .iter()
+        .find(|c| c.id == cid || c.id.starts_with(&cid) || cid.starts_with(&c.id))
+        .ok_or(AppError::NotFound)?;
+
+    if body.enabled && container.health.is_none() {
+        return Err(AppError::BadRequest(
+            "overwatch requires a container healthcheck".into(),
+        ));
+    }
+
+    let now = Utc::now();
+    let canonical_id = container.id.clone();
+
+    if body.enabled {
+        sqlx::query(
+            r#"
+            INSERT INTO overwatch (host_id, container_id, enabled, updated_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(host_id, container_id) DO UPDATE SET
+                enabled = 1,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&id)
+        .bind(&canonical_id)
+        .bind(now)
+        .execute(&state.db)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE overwatch SET enabled = 0, updated_at = ? WHERE host_id = ? AND (container_id = ? OR container_id LIKE ?)",
+        )
+        .bind(now)
+        .bind(&id)
+        .bind(&canonical_id)
+        .bind(format!("{canonical_id}%"))
+        .execute(&state.db)
+        .await?;
+        // also disable short-id rows
+        sqlx::query(
+            "UPDATE overwatch SET enabled = 0, updated_at = ? WHERE host_id = ? AND ? LIKE (container_id || '%')",
+        )
+        .bind(now)
+        .bind(&id)
+        .bind(&canonical_id)
+        .execute(&state.db)
+        .await?;
+    }
+
+    tracker::record(
+        &state.db,
+        &user,
+        if body.enabled {
+            "overwatch.enable"
+        } else {
+            "overwatch.disable"
+        },
+        Some("container"),
+        Some(&canonical_id),
+        Some(serde_json::json!({ "host_id": id, "name": container.name })),
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "overwatch": body.enabled,
+        "container_id": canonical_id,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,23 +286,41 @@ pub struct LogsQuery {
 
 pub async fn get_logs(
     State(state): State<AppState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Path((id, cid)): Path<(String, String)>,
     Query(q): Query<LogsQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
     ensure_host_exists(&state, &id).await?;
     let tail = q.tail.unwrap_or(200).clamp(1, 5000);
     let logs = state.hub.get_logs(&id, &cid, tail).await?;
+    tracker::record(
+        &state.db,
+        &user,
+        "container.logs",
+        Some("container"),
+        Some(&cid),
+        Some(serde_json::json!({ "host_id": id, "tail": tail })),
+    )
+    .await;
     Ok(Json(serde_json::json!({ "logs": logs })))
 }
 
 pub async fn restart_container(
     State(state): State<AppState>,
-    _user: AuthUser,
+    AuthUser(user): AuthUser,
     Path((id, cid)): Path<(String, String)>,
 ) -> AppResult<Json<serde_json::Value>> {
     ensure_host_exists(&state, &id).await?;
     state.hub.restart_container(&id, &cid).await?;
+    tracker::record(
+        &state.db,
+        &user,
+        "container.restart",
+        Some("container"),
+        Some(&cid),
+        Some(serde_json::json!({ "host_id": id })),
+    )
+    .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

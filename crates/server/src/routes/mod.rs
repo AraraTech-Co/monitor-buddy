@@ -1,12 +1,14 @@
 pub mod agent_ws;
 pub mod auth;
 pub mod hosts;
+pub mod tracker_api;
+pub mod users;
 
 use std::path::PathBuf;
 
 use axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -22,6 +24,7 @@ pub fn app_router(state: AppState) -> Router {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
@@ -37,6 +40,9 @@ pub fn app_router(state: AppState) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/users", get(users::list_users).post(users::create_user))
+        .route("/api/users/{id}", delete(users::delete_user))
+        .route("/api/tracker", get(tracker_api::list_activity))
         .route("/api/hosts", get(hosts::list_hosts).post(hosts::create_host))
         .route("/api/hosts/{id}", delete(hosts::delete_host))
         .route("/api/hosts/{id}/containers", get(hosts::list_containers))
@@ -47,6 +53,10 @@ pub fn app_router(state: AppState) -> Router {
         .route(
             "/api/hosts/{id}/containers/{cid}/restart",
             post(hosts::restart_container),
+        )
+        .route(
+            "/api/hosts/{id}/containers/{cid}/overwatch",
+            put(hosts::set_overwatch),
         )
         .route("/agent/ws", get(agent_ws::agent_ws))
         .with_state(state.clone());

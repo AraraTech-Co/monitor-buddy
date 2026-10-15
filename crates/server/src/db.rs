@@ -27,6 +27,10 @@ pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
         .connect(&url)
         .await?;
 
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await?;
+
     sqlx::migrate!("./migrations").run(&pool).await.map_err(|e| AppError::internal(e))?;
     Ok(pool)
 }
