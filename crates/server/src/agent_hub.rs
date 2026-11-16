@@ -15,6 +15,7 @@ pub struct HostRuntime {
 }
 
 struct AgentConn {
+    conn_id: Uuid,
     tx: tokio::sync::mpsc::UnboundedSender<ServerToAgent>,
 }
 
@@ -51,17 +52,37 @@ impl AgentHub {
         &self,
         host_id: String,
         tx: tokio::sync::mpsc::UnboundedSender<ServerToAgent>,
-    ) {
-        self.agents
+    ) -> Uuid {
+        let conn_id = Uuid::new_v4();
+        let replaced = self
+            .agents
             .lock()
             .await
-            .insert(host_id.clone(), AgentConn { tx });
-        tracing::info!(%host_id, "agent registered");
+            .insert(host_id.clone(), AgentConn { conn_id, tx })
+            .is_some();
+        tracing::info!(%host_id, %conn_id, replaced, "agent registered");
+        conn_id
     }
 
     pub async fn disconnect(&self, host_id: &str) {
         self.agents.lock().await.remove(host_id);
         tracing::info!(host_id, "agent disconnected");
+    }
+
+    /// Remove the host only if the closed connection is the current one,
+    /// so a stale connection can't take down a newer one.
+    pub async fn disconnect_conn(&self, host_id: &str, conn_id: Uuid) {
+        let mut agents = self.agents.lock().await;
+        let is_current = agents
+            .get(host_id)
+            .map(|current| current.conn_id == conn_id)
+            .unwrap_or(false);
+        if is_current {
+            agents.remove(host_id);
+            tracing::info!(host_id, %conn_id, "agent disconnected");
+        } else {
+            tracing::info!(host_id, %conn_id, "stale agent connection closed; current connection kept");
+        }
     }
 
     pub async fn update_heartbeat(&self, host_id: &str, containers: Vec<ContainerInfo>) {
@@ -243,5 +264,28 @@ impl AgentHub {
         }
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Agent reconnects while the old connection is still open; when the old
+    // one closes, the host must stay online.
+    #[tokio::test]
+    async fn stale_connection_does_not_drop_current() {
+        let hub = AgentHub::new();
+        let (tx_old, _rx_old) = tokio::sync::mpsc::unbounded_channel();
+        let (tx_new, _rx_new) = tokio::sync::mpsc::unbounded_channel();
+
+        let old = hub.register("host-1".into(), tx_old).await;
+        let new = hub.register("host-1".into(), tx_new).await;
+
+        hub.disconnect_conn("host-1", old).await;
+        assert!(hub.is_online("host-1").await, "stale connection removed the host");
+
+        hub.disconnect_conn("host-1", new).await;
+        assert!(!hub.is_online("host-1").await, "current connection closed but host stayed online");
     }
 }
