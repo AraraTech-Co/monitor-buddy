@@ -41,6 +41,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     let mut host_id: Option<String> = None;
     let mut authenticated = false;
+    let mut conn_id: Option<uuid::Uuid> = None;
 
     while let Some(Ok(msg)) = stream.next().await {
         let text = match msg {
@@ -76,7 +77,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         Ok(Some(host)) => {
                             host_id = Some(host.id.clone());
                             authenticated = true;
-                            state.hub.register(host.id.clone(), out_tx.clone()).await;
+                            conn_id = Some(state.hub.register(host.id.clone(), out_tx.clone()).await);
                             let _ = sqlx::query(
                                 "UPDATE hosts SET last_seen_at = ? WHERE id = ?",
                             )
@@ -125,8 +126,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         state.hub.dispatch_agent_message(hid, parsed).await;
     }
 
-    if let Some(hid) = host_id {
-        state.hub.disconnect(&hid).await;
+    if let (Some(hid), Some(cid)) = (host_id, conn_id) {
+        state.hub.disconnect_conn(&hid, cid).await;
     }
     writer.abort();
 }
